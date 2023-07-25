@@ -2,15 +2,17 @@
 
 /// Word Count application
 pub mod wc {
-    pub fn map(input: &str) -> Vec<(String, i32)> {
+    use crate::mr::worker::KeyValue;
+
+    pub fn map(input: &str) -> Vec<KeyValue> {
         input
             .split_whitespace()
-            .map(|x| (x.to_string(), 1))
+            .map(|x| KeyValue::new(x.to_string(), 1.to_string()) )
             .collect()
     }
 
-    pub fn reduce(key: &str, value: Vec<i32>) -> (String, i32) {
-        (key.to_string(), value.len() as i32)
+    pub fn reduce(key: &str, value: Vec<&str>) -> String {
+        value.len().to_string()
     }
 }
 
