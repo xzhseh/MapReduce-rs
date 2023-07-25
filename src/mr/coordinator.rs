@@ -52,25 +52,33 @@ impl Server for Coordinator {
     type ReportMapTaskFinishFut = Ready<bool>;
     type ReportReduceTaskFinishFut = Ready<bool>;
 
-    /// The worker will call this during map phase, to get a map task id, represents a input text file
+    /// The worker will call this during map phase through RPC, to get a map task id, represents a input text file
     fn get_map_task(self, _: context::Context) -> Self::GetMapTaskFut {
-        let mut cur_id = self.map_id.lock().unwrap();
-        let ret = ready(*cur_id);
+        let mut cur_map_id = self.map_id.lock().unwrap();
+        let ret = ready(*cur_map_id);
         // Increase the map task id by one
-        *cur_id += 1;
+        *cur_map_id += 1;
         // Return the map task id
         ret
     }
 
+    /// The worker will call this during reduce phase through RPC, to get a reduce task id, represents a output file
     fn get_reduce_task(self, _:context::Context) -> Self::GetReduceTaskFut {
+        let mut cur_reduce_id = self.reduce_id.lock().unwrap();
+        let ret = ready(*cur_reduce_id);
+        // Increase the reduce task id by one
+        *cur_reduce_id += 1;
+        // Return the reduce task id
+        ret
+    }
+
+    /// The worker will call this when finishing the map task
+    fn report_map_task_finish(self, _:context::Context, id: i32) -> Self::ReportMapTaskFinishFut {
         
     }
 
-    fn report_map_task_finish(self, _:context::Context, id:i32) -> Self::ReportMapTaskFinishFut {
-        
-    }
-
-    fn report_reduce_task_finish(self, _:context::Context, id:i32) -> Self::ReportReduceTaskFinishFut {
+    /// The worker will call this when finishing the reduce task
+    fn report_reduce_task_finish(self, _:context::Context, id: i32) -> Self::ReportReduceTaskFinishFut {
         
     }
 }
