@@ -16,7 +16,7 @@ async fn main() -> anyhow::Result<()> {
         // Note here the `input file number` is number of files to read for each map task
         // Which is the `map_n` in `Coordinator`
         // The input file will start from `pg-0.txt` to `pg-{0 + map_n - 1}.txt`
-        println!("Usage: cargo run mrworker -- <input files number> <reduce task number>");
+        println!("Usage: cargo run --bin mrworker -- <input files number> <reduce task number>");
         return Ok(());
     }
 
