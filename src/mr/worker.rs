@@ -2,6 +2,8 @@ use std::{fs::File, io::Read, collections::hash_map::DefaultHasher, hash::{Hash,
 
 use tokio::io::AsyncWriteExt;
 
+/// If you add your own map reduce function, you'll want to replace this with your function
+/// Also don't forget to replace the input function for the later `map` & `reduce` of `Worker`
 use crate::mr::function::wc;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
