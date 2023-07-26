@@ -19,7 +19,12 @@ async fn main() -> anyhow::Result<()> {
 
     let (map_n, reduce_n, worker_n) = (args[1].parse::<i32>()?, args[2].parse::<i32>()?, args[3].parse::<i32>()?);
 
-    println!("[Coordinator Configuration] #{} Map Tasks | #{} Reduce Tasks | #{} Worker Processes", map_n, reduce_n, worker_n);
+    println!(
+        "[Coordinator Configuration] #{} Map Tasks | #{} Reduce Tasks | #{} Worker Processes",
+        map_n,
+        reduce_n,
+        worker_n
+    );
 
     // Create a new Coordinator
     let coordinator = Arc::new(Mutex::new(Coordinator::new(map_n, reduce_n, worker_n)));
@@ -34,11 +39,13 @@ async fn main() -> anyhow::Result<()> {
         Json::default
     ).await?;
 
-    tokio::spawn(server_transport
-        // Accepts if this is a valid connection, otherwise ignores this connection
-        .filter_map(|r| async { r.ok() })
-        .map(tarpc::server::BaseChannel::with_defaults)
-        .execute(coordinator_clone.lock().unwrap().clone().serve()));
+    tokio::spawn(
+        server_transport
+            // Accepts if this is a valid connection, otherwise ignores this connection
+            .filter_map(|r| async { r.ok() })
+            .map(tarpc::server::BaseChannel::with_defaults)
+            .execute(coordinator_clone.lock().unwrap().clone().serve())
+    );
 
     println!("[Preparation] The Coordinator RPC server has launched and is currently serving, please launch #{} worker process(es) to begin MapReduce", worker_n);
 
