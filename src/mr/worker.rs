@@ -16,6 +16,8 @@ impl KeyValue {
     }
 }
 
+/// One worker will only be touched by one worker process, there is no need to synchronize anything
+/// We are thus lock-free!
 pub struct Worker {
     /// The current state, `false` represents `map phase`, `true` represents `reduce phase`
     state: bool,
@@ -23,18 +25,18 @@ pub struct Worker {
     map_task_id: i32,
     /// The reduce task id, indicating which intermediate files to read & reduce, will be -1 if the current job finished
     reduce_task_id: i32,
-    /// The total map tasks,used to read intermediate files
+    /// The total map tasks, used to read intermediate files
     map_n: i32,
     /// The total reduce tasks, used to generate intermediate files (Usually with hash function)
     reduce_n: i32,
 }
 
-/// Calling the user-defined map function
+/// Calls the user-defined map function
 pub fn call_map_func(map_func: Box<dyn Fn(&str) -> Vec<KeyValue> + Send>, contents: &str) -> Vec<KeyValue> {
     map_func(contents)
 }
 
-/// Calling the user-defined reduce function
+/// Calls the user-defined reduce function
 pub fn call_reduce_func(
         reduce_func: Box<dyn Fn(&str, Vec<&str>) -> String + Send>,
         key: &str,
