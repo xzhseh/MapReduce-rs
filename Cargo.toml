@@ -11,4 +11,5 @@ tarpc = { version = "0.33.0", features = ["full"] }
 tokio-serde = { version = "0.6", features = ["json"] }
 serde = "1.0.175"
 anyhow = "1.0.72"
+rayon = "1.7.0"
 futures = "0.3.28"
