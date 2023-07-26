@@ -27,3 +27,4 @@ A typical MapReduce result will probably look like the following image, the `Coo
 - Improve logging method, add different logging level
 - Parallel processing for each worker
 - Better serialization & deserialization format especially for intermediate files
+- More test cases
