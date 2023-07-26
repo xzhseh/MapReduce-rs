@@ -17,6 +17,10 @@ pub struct Coordinator {
     map_n: i32,
     /// The number of reduce tasks
     reduce_n: i32,
+    /// Indicates if the map phase has finished
+    map_finish: Arc<Mutex<bool>>,
+    /// Indicates if the reduce phase has finished
+    reduce_finish: Arc<Mutex<bool>>,
 }
 
 impl Coordinator {
@@ -29,19 +33,22 @@ impl Coordinator {
             reduce_id: Arc::new(Mutex::new(0)),
             map_n,
             reduce_n,
+            map_finish: Arc::new(Mutex::new(false)),
+            reduce_finish: Arc::new(Mutex::new(false)),
         }
     }
 
     /// Check if the overall MapReduce process has finished
     pub fn done(&self) -> bool {
-        let cur_reduce_tasks = self.reduce_tasks.lock().unwrap();
-        let cur_reduce_id = self.reduce_id.lock().unwrap();
-        // The length of reduce_tasks map should not be 0
-        (*cur_reduce_id == self.reduce_n) &&
-        // If any of the flag is not `true`, means the overall MapReduce 
-        cur_reduce_tasks
-            .iter()
-            .any(|(_, flag)| *flag != true)
+        // let cur_reduce_tasks = self.reduce_tasks.lock().unwrap();
+        // let cur_reduce_id = self.reduce_id.lock().unwrap();
+        // // The length of reduce_tasks map should not be 0
+        // (*cur_reduce_id == self.reduce_n) &&
+        // // If any of the flag is not `true`, means the overall MapReduce 
+        // cur_reduce_tasks
+        //     .iter()
+        //     .any(|(_, flag)| *flag != true)
+        *self.map_finish.lock().unwrap() && *self.reduce_finish.lock().unwrap()
     }
 }
 
@@ -69,14 +76,14 @@ impl Server for Coordinator {
     /// The worker will call this during map phase through RPC, to get a map task id, represents a input text file
     fn get_map_task(self, _: context::Context) -> Self::GetMapTaskFut {
         let mut cur_map_id = self.map_id.lock().unwrap();
-        if *cur_map_id == self.map_n {
+        if *cur_map_id == self.map_n || *self.map_finish.lock().unwrap() {
             // No more map tasks are available
             return ready(-1);
         }
         let mut cur_map_tasks = self.map_tasks.lock().unwrap();
         cur_map_tasks.insert(*cur_map_id, false);
         let ret = ready(*cur_map_id);
-        // Increase the map task id by one
+        // Increase the global unique map task id by one
         *cur_map_id += 1;
         // Return the map task id
         ret
@@ -85,14 +92,14 @@ impl Server for Coordinator {
     /// The worker will call this during reduce phase through RPC, to get a reduce task id, represents a output file
     fn get_reduce_task(self, _:context::Context) -> Self::GetReduceTaskFut {
         let mut cur_reduce_id = self.reduce_id.lock().unwrap();
-        if *cur_reduce_id == self.reduce_n {
+        if *cur_reduce_id == self.reduce_n || *self.reduce_finish.lock().unwrap() {
             // No more reduce tasks are available
             return ready(-1);
         }
         let mut cur_reduce_tasks = self.reduce_tasks.lock().unwrap();
         cur_reduce_tasks.insert(*cur_reduce_id, false);
         let ret = ready(*cur_reduce_id);
-        // Increase the reduce task id by one
+        // Increase the global unique reduce task id by one
         *cur_reduce_id += 1;
         // Return the reduce task id
         ret
@@ -104,6 +111,10 @@ impl Server for Coordinator {
         assert!(cur_map_tasks.contains_key(&id) && *cur_map_tasks.get(&id).unwrap() == false);
         // Set the value to `true`, indicating the finish of the map task
         cur_map_tasks.insert(id, true);
+        if id == self.map_n - 1 {
+            let mut map_finish = self.map_finish.lock().unwrap();
+            *map_finish = true;
+        }
         ready(true)
     }
 
@@ -113,6 +124,10 @@ impl Server for Coordinator {
         assert!(cur_reduce_tasks.contains_key(&id) && *cur_reduce_tasks.get(&id).unwrap() == false);
         // Set the value to `true`, indicating the finish of the reduce task
         cur_reduce_tasks.insert(id, true);
+        if id == self.reduce_n - 1 {
+            let mut reduce_finish = self.reduce_finish.lock().unwrap();
+            *reduce_finish = true;
+        }
         ready(true)
     }
 }
