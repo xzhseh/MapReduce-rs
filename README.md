@@ -13,7 +13,7 @@ To run the program, follow the instructions:
 - You can start the `Coordinator` by running `cargo run --bin mrcoordinator <map tasks number> <reduce tasks number> <worker number>`
 - Then start one or more `Worker(s)` in **different** terminal windows by running `cargo run --bin mrworker <map tasks number> <reduce tasks number>`, please make sure the server has been started before you starts the `Worker`
 - The number of `Worker(s)` should exactly match with the specified number when you started the server, otherwise the MapReduce process either will hang (The `Worker(s)` is not enough) or will panic (The `Worker(s)` exceed the preset limit)
-- Check the final result by running `make generate`, feel free to change anything in the provided `Makefile`
+- To check the final result, first run `make clean`, this will clean all intermediate files, then running `make generate` to generate the sorted `final.txt`, feel free to change anything in the provided `Makefile` to best fit your taste!
 
 TODO:
 - Fault tolerance mechanism
