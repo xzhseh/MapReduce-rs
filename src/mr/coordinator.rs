@@ -1,7 +1,8 @@
-use std::{sync::{Arc, Mutex}, collections::HashMap};
+use std::{sync::{Arc, Mutex}, collections::{HashMap, HashSet}, time::Duration};
 
 use futures::future::{Ready, ready};
 use tarpc::context;
+use tokio::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct Coordinator {
@@ -25,6 +26,10 @@ pub struct Coordinator {
     reduce_finish: Arc<Mutex<bool>>,
     /// The global unique worker id, will assign to each worker through RPC, starts from 0 to {worker_n - 1}
     worker_id: Arc<Mutex<i32>>,
+    /// The map lease, used to track the map tasks granted to workers (Will be checked every 5 seconds by default)
+    map_leases: Arc<Mutex<HashMap<i32, Instant>>>,
+    /// The reduce lease, used to track the reduce tasks granted to workers (The time period is the same with above)
+    reduce_leases: Arc<Mutex<HashMap<i32, Instant>>>,
 }
 
 impl Coordinator {
@@ -41,6 +46,8 @@ impl Coordinator {
             map_finish: Arc::new(Mutex::new(false)),
             reduce_finish: Arc::new(Mutex::new(false)),
             worker_id: Arc::new(Mutex::new(0)),
+            map_leases: Arc::new(Mutex::new(HashMap::new())),
+            reduce_leases: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -53,6 +60,66 @@ impl Coordinator {
     /// Check if the overall MapReduce process has finished
     pub fn done(&self) -> bool {
         *self.map_finish.lock().unwrap() && *self.reduce_finish.lock().unwrap()
+    }
+
+    /// Check the current lease based on the state, reset the task status if the task has staled
+    pub fn check_lease(&mut self) -> bool {
+        // We should all the locks at first, since the intermediate state may change between the period
+        let _map_id = self.map_id.lock().unwrap();
+        let _reduce_id = self.reduce_id.lock().unwrap();
+        let _worker_id = self.worker_id.lock().unwrap();
+
+        let mut map_tasks = self.map_tasks.lock().unwrap();
+        let mut reduce_tasks = self.reduce_tasks.lock().unwrap();
+        let mut map_leases = self.map_leases.lock().unwrap();
+        let mut reduce_leases = self.reduce_leases.lock().unwrap();
+        let reduce_finish = self.reduce_finish.lock().unwrap();
+        let map_finish = self.map_finish.lock().unwrap();
+
+        if *map_finish && *reduce_finish {
+            // The MapReduce has finished, nothing to check
+            return true;
+        }
+
+        if *map_finish {
+            // The MapReduce should be in the reduce phase
+            println!("[Check Lease] The MapReduce is in reduce phase, begin to check reduce tasks leases");
+            // Sanity check
+            assert!(!*reduce_finish);
+            // Check every reduce task lease, get the outdated ones
+            let stale_reduce_tasks = reduce_leases
+                .iter()
+                // If the lease has not been updated for 5 seconds, mark it as stale
+                .filter(|(_, time)| time.elapsed() >= Duration::new(5, 0))
+                .map(|x| *x.0)
+                .collect::<HashSet<i32>>();
+            // Update the corresponding reduce task map and refresh the reduce lease
+            for stale_id in &stale_reduce_tasks {
+                assert!(reduce_tasks.get(stale_id).unwrap());
+                reduce_tasks.insert(*stale_id, false);
+                reduce_leases.remove_entry(stale_id);
+            }
+            return true;
+        }
+
+        // Then the MapReduce must in the map phase
+        assert!(!*map_finish && !*reduce_finish);
+        println!("[Check Lease] The MapReduce is in reduce phase, begin to check map tasks leases");
+        // Check every map task lease, get the outdated ones
+        let stale_map_tasks = map_leases
+            .iter()
+            // If the lease has not been updated for 5 seconds, mark it as stale
+            .filter(|(_, time)| time.elapsed() >= Duration::new(5, 0))
+            .map(|x| *x.0)
+            .collect::<HashSet<i32>>();
+        // Update the corresponding reduce task map and refresh the reduce lease
+        for stale_id in &stale_map_tasks {
+            assert!(map_tasks.get(stale_id).unwrap());
+            map_tasks.insert(*stale_id, false);
+            map_leases.remove_entry(stale_id);
+        }
+
+        true
     }
 }
 
@@ -70,6 +137,10 @@ pub trait Server {
     async fn report_map_task_finish(id: i32) -> bool;
     /// Report reduce task has finished
     async fn report_reduce_task_finish(id: i32) -> bool;
+    /// Renew the current map task lease
+    async fn renew_map_lease(id: i32) -> bool;
+    /// Renew the current reduce task lease
+    async fn renew_reduce_lease(id: i32) -> bool;
 }
 
 /// Register the four RPC functions on Coordinator, which is also the RPC server
@@ -80,6 +151,28 @@ impl Server for Coordinator {
     type GetWorkerIdFut = Ready<i32>;
     type ReportMapTaskFinishFut = Ready<bool>;
     type ReportReduceTaskFinishFut = Ready<bool>;
+    type RenewMapLeaseFut = Ready<bool>;
+    type RenewReduceLeaseFut = Ready<bool>;
+
+    /// The worker will call this every 1 second to renew the current map task lease
+    fn renew_map_lease(self, _: context::Context, id: i32) -> Self::RenewMapLeaseFut {
+        let mut map_lease = self.map_leases.lock().unwrap();
+        // Sanity check
+        assert!(map_lease.contains_key(&id));
+        // Renew the map lease
+        map_lease.insert(id, Instant::now());
+        ready(true)
+    }
+
+    /// The worker will call this every 1 second to renew the current reduce task lease
+    fn renew_reduce_lease(self, _: context::Context, id: i32) -> Self::RenewReduceLeaseFut {
+        let mut reduce_lease = self.reduce_leases.lock().unwrap();
+        // Sanity check
+        assert!(reduce_lease.contains_key(&id));
+        // Renew the reduce lease
+        reduce_lease.insert(id, Instant::now());
+        ready(true)
+    }
 
     /// The worker will call this during map phase through RPC, to get a map task id, represents a input text file
     fn get_map_task(self, _: context::Context) -> Self::GetMapTaskFut {
