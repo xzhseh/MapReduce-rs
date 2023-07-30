@@ -92,7 +92,7 @@ impl Worker {
             file_name,
             self.map_task_id
         );
-        let mut file = File::open(file_name).unwrap();
+        let mut file = File::open("resource/".to_string() + &file_name).unwrap();
         let mut contents = String::new();
         file.read_to_string(&mut contents).unwrap();
         contents
