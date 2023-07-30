@@ -179,6 +179,7 @@ impl Server for Coordinator {
         // First lock the resources
         let mut cur_map_id = self.map_id.lock().unwrap();
         let mut cur_map_tasks = self.map_tasks.lock().unwrap();
+        let mut cur_map_leases = self.map_leases.lock().unwrap();
 
         if !self.prepare() {
             // This indicates the worker that the preparation phase hasn't ended
@@ -200,6 +201,10 @@ impl Server for Coordinator {
                 // Otherwise, there is staled task, assign this task to the worker
                 // Also update the status
                 cur_map_tasks.insert(k, true);
+                // Sanity check
+                assert!(!cur_map_leases.contains_key(&k));
+                // Update the lease
+                cur_map_leases.insert(k, Instant::now());
                 return ready(k);
             }
             // No more map tasks are available
@@ -208,6 +213,8 @@ impl Server for Coordinator {
 
         // Otherwise, this should be the normal process
         cur_map_tasks.insert(*cur_map_id, false);
+        // Insert the new lease
+        cur_map_leases.insert(*cur_map_id, Instant::now());
         let cur_map = *cur_map_id;
         let ret = ready(cur_map);
         // Increase the global unique map task id by one
@@ -225,6 +232,7 @@ impl Server for Coordinator {
         // First lock the resources
         let mut cur_reduce_id = self.reduce_id.lock().unwrap();
         let mut cur_reduce_tasks = self.reduce_tasks.lock().unwrap();
+        let mut cur_reduce_leases = self.reduce_leases.lock().unwrap();
 
         if !*self.map_finish.lock().unwrap() {
             // The map phase has not yet finished
@@ -241,6 +249,10 @@ impl Server for Coordinator {
                 // Otherwise, there is staled task, assign this task to the worker
                 // Also update the status
                 cur_reduce_tasks.insert(k, true);
+                // Sanity check
+                assert!(!cur_reduce_leases.contains_key(&k));
+                // Update the lease
+                cur_reduce_leases.insert(k, Instant::now());
                 return ready(k);
             }
             // No more reduce tasks are available
@@ -249,6 +261,8 @@ impl Server for Coordinator {
 
         // Otherwise, this should be the normal process
         cur_reduce_tasks.insert(*cur_reduce_id, false);
+        // Insert the new lease
+        cur_reduce_leases.insert(*cur_reduce_id, Instant::now());
         let cur_reduce = *cur_reduce_id;
         let ret = ready(cur_reduce);
         // Increase the global unique reduce task id by one
@@ -280,8 +294,13 @@ impl Server for Coordinator {
     /// The worker will call this when finishing the map task
     fn report_map_task_finish(self, _: context::Context, id: i32) -> Self::ReportMapTaskFinishFut {
         let cur_map_tasks = self.map_tasks.lock().unwrap();
+        let mut cur_map_leases = self.map_leases.lock().unwrap();
+        // Sanity check
         assert!(cur_map_tasks.contains_key(&id) && *cur_map_tasks.get(&id).unwrap() == true);
+        assert!(cur_map_leases.contains_key(&id));
         println!("[Map] Map task #{} has been finished", id);
+        // Remove the lease, since the task has been finished
+        cur_map_leases.remove_entry(&id);
         // No need to do the following since the semantic of the map has changed
         // Set the value to `true`, indicating the finish of the map task
         // cur_map_tasks.insert(id, true);
@@ -295,6 +314,10 @@ impl Server for Coordinator {
                 println!("[Map] Staled map task #{} detected when reporting, the previous worker may have gone offline, will assigned this task to a new worker", k);
                 return ready(true);
             }
+            if !cur_map_leases.is_empty() {
+                println!("[Map] The map lease is not empty, there's still unfinished map tasks");
+                return ready(true);
+            }
             // Otherwise, it's safe to set the `map_finish` to true
             let mut map_finish = self.map_finish.lock().unwrap();
             *map_finish = true;
@@ -306,8 +329,13 @@ impl Server for Coordinator {
     /// The worker will call this when finishing the reduce task
     fn report_reduce_task_finish(self, _: context::Context, id: i32) -> Self::ReportReduceTaskFinishFut {
         let cur_reduce_tasks = self.reduce_tasks.lock().unwrap();
+        let mut cur_reduce_leases = self.reduce_leases.lock().unwrap();
+        // Sanity check
         assert!(cur_reduce_tasks.contains_key(&id) && *cur_reduce_tasks.get(&id).unwrap() == true);
+        assert!(cur_reduce_leases.contains_key(&id));
         println!("[Reduce] Reduce task #{} has been finished", id);
+        // Remove the lease, since the task has been finished
+        cur_reduce_leases.remove_entry(&id);
         // No need to do the following since the semantic of the map has changed
         // Set the value to `true`, indicating the finish of the reduce task
         // cur_reduce_tasks.insert(id, true);
@@ -319,6 +347,10 @@ impl Server for Coordinator {
                     continue;
                 }
                 println!("[Reduce] Staled reduce task #{} detected when reporting, the previous worker may have gone offline, will assigned this task to a new worker", k);
+                return ready(true);
+            }
+            if !cur_reduce_leases.is_empty() {
+                println!("[Reduce] The reduce lease is not empty, there's still unfinished reduce tasks");
                 return ready(true);
             }
             // Otherwise, it's safe to set the `reduce_finish` to true
