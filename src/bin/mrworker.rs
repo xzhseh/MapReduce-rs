@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, env, time::Duration};
+use std::{net::SocketAddr, env, time::Duration, sync::{Arc, Mutex}};
 
 use map_reduce_rs::mr::{coordinator::ServerClient, worker::Worker};
 use tarpc::{tokio_serde::formats::Json, client, context};
@@ -77,10 +77,48 @@ async fn main() -> anyhow::Result<()> {
                 }
                 // Otherwise, let's do the map job!
                 worker.set_map_id(map_task_id);
+                let lease_flag = Arc::new(Mutex::new(false));
+                let lease_flag_clone = Arc::clone(&lease_flag);
+                // Spawn a background thread to maintain the heartbeat message with coordinator
+                tokio::spawn(
+                    async move {
+                        // Let's first create a new client
+                        // Connect to the server
+                        let thread_client_transport = match tarpc::serde_transport::tcp::connect(server_address, Json::default).await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                println!(
+                                    "[Map Lease] Worker failed to connect to the RPC server, please check the Coordinator status!\n{}{}",
+                                    "Error Message: ",
+                                    e
+                                );
+                                return;
+                            }
+                        };
+                        let thread_client = ServerClient::new(client::Config::default(), thread_client_transport).spawn();
+                        // Start the loop
+                        loop {
+                            if *lease_flag_clone.lock().unwrap() {
+                                // If the `lease_flag` is true, means the current map task has finished
+                                // Just exit the background thread
+                                // since we don't need to renew the lease for this task
+                                return;
+                            }
+                            // Otherwise, renew the lease with coordinator
+                            thread_client.renew_map_lease(context::current(), map_task_id).await.unwrap();
+                            // Sleep for 1 second
+                            sleep(Duration::from_secs(1)).await;
+                        }
+                    }
+                );
                 // Assert the map succeeds
                 assert!(worker.map().await?);
                 // Report to the coordinator
                 assert!(client.report_map_task_finish(context::current(), map_task_id).await?);
+                // After report the map task finish to the coordinator,
+                // set the lease flag to false to stop the background thread
+                assert!(!*lease_flag.lock().unwrap());
+                *lease_flag.lock().unwrap() = true;
             }
             true => {
                 // In reduce phase
@@ -100,9 +138,47 @@ async fn main() -> anyhow::Result<()> {
                 }
                 // Otherwise, let's do the reduce job!
                 worker.set_reduce_id(reduce_task_id);
+                let lease_flag = Arc::new(Mutex::new(false));
+                let lease_flag_clone = Arc::clone(&lease_flag);
+                // Spawn a background thread to maintain the heartbeat message with coordinator
+                tokio::spawn(
+                    async move {
+                        // Let's first create a new client
+                        // Connect to the server
+                        let thread_client_transport = match tarpc::serde_transport::tcp::connect(server_address, Json::default).await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                println!(
+                                    "[Reduce Lease] Worker failed to connect to the RPC server, please check the Coordinator status!\n{}{}",
+                                    "Error Message: ",
+                                    e
+                                );
+                                return;
+                            }
+                        };
+                        let thread_client = ServerClient::new(client::Config::default(), thread_client_transport).spawn();
+                        // Start the loop
+                        loop {
+                            if *lease_flag_clone.lock().unwrap() {
+                                // If the `lease_flag` is true, means the current map task has finished
+                                // Just exit the background thread
+                                // since we don't need to renew the lease for this task
+                                return;
+                            }
+                            // Otherwise, renew the lease with coordinator
+                            thread_client.renew_reduce_lease(context::current(), reduce_task_id).await.unwrap();
+                            // Sleep for 1 second
+                            sleep(Duration::from_secs(1)).await;
+                        }
+                    }
+                );
                 assert!(worker.reduce().await?);
                 // Report to the coordinator
                 assert!(client.report_reduce_task_finish(context::current(), reduce_task_id).await?);
+                // After report the reduce task finish to the coordinator,
+                // set the lease flag to false to stop the background thread
+                assert!(!*lease_flag.lock().unwrap());
+                *lease_flag.lock().unwrap() = true;
             }
         }
     }
