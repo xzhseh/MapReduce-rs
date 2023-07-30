@@ -4,7 +4,7 @@
 - The user runtime is using `tokio`, an asynchronous runtime for Rust, make it efficient under I/O-Bound scenario like MapReduce
 - The RPC framework is using `tarpc`, nodes will communicate through `TCP` connection
 - You may start the MapReduce process with **one** `Coordinator` & **multiple** `Worker(s)`, the number of worker processes can be specified by users
-- The default application is a word count application, which will use the provided `pg-*.txt` files to count the total words and the corresponding frequency
+- The default application is a word count application, which will use the provided `pg-*.txt` files under the `resource` directory to count the total words and the corresponding frequency
 - You can define your own map reduce function in `src/mr/function.rs` & `src/mr/worker.rs`, see the comment for details
 - You may want to change the `server_address` to adapt to your environment, check `src/bin/mrcoordinator.rs` & `src/bin/mrworker.rs` for details
 - If one or more `Worker(s)` crash(es) during the MapReduce process, the `fault-tolerant` mechanism (By maintaining the heartbeat-like, leases of each tasks to allow the `Coordinator` detect if any of the `Worker` has gone offline) will allow the MapReduce continue progressing, also ensure the correctness
