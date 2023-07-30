@@ -49,9 +49,21 @@ async fn main() -> anyhow::Result<()> {
 
     println!("[Preparation] The Coordinator RPC server has launched and is currently serving, please launch #{} worker process(es) to begin MapReduce", worker_n);
 
+    // Used to check the lease every 5 seconds, to detect the sudden crash from workers
+    let lease_period = 5;
+    let mut lease_time_counter = 0;
     while !coordinator.lock().unwrap().done() {
         // If not finished, sleep for a while in the main thread
         sleep(Duration::from_secs(1)).await;
+        lease_time_counter += 1;
+        if lease_time_counter == lease_period {
+            // Check the map or reduce lease every `lease_period` seconds
+            // Since the MapReduce will only be in either map or reduce phase without overlapping
+            println!("[Check Lease] Check the current lease to see if any worker is offline");
+            assert!(coordinator.lock().unwrap().check_lease());
+            // Reset the time counter
+            lease_time_counter = 0;
+        }
     }
 
     println!(
