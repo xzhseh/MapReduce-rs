@@ -1,4 +1,4 @@
-use std::{sync::{Arc, Mutex}, collections::{HashMap, HashSet}, time::Duration};
+use std::{sync::{Arc, Mutex}, collections::{HashMap, HashSet}, time::Duration, io::{Read, Write}};
 
 use futures::future::{Ready, ready};
 use tarpc::context;
@@ -30,6 +30,10 @@ pub struct Coordinator {
     map_leases: Arc<Mutex<HashMap<i32, Instant>>>,
     /// The reduce lease, used to track the reduce tasks granted to workers (The time period is the same with above)
     reduce_leases: Arc<Mutex<HashMap<i32, Instant>>>,
+    /// The name of logging directory, containing all the logs
+    log_dir_name: String,
+    /// The file name of the underlying write-ahead-log for coordinator inside log directory
+    wal_name: String,
 }
 
 impl Coordinator {
@@ -48,6 +52,8 @@ impl Coordinator {
             worker_id: Arc::new(Mutex::new(0)),
             map_leases: Arc::new(Mutex::new(HashMap::new())),
             reduce_leases: Arc::new(Mutex::new(HashMap::new())),
+            log_dir_name: String::from("log"),
+            wal_name: String::from("coordinator.wal"),
         }
     }
 
@@ -121,6 +127,99 @@ impl Coordinator {
             map_leases.remove_entry(stale_id);
         }
 
+        true
+    }
+
+    /// This function will serialize the current status of the coordinator to the underlying Write-Ahead-Log
+    fn serialize(&self) -> bool {
+        // Hold the lock of all the resources that need to be serialized at first
+        let map_id = self.map_id.lock().unwrap();
+        let reduce_id = self.reduce_id.lock().unwrap();
+        let map_tasks = self.map_tasks.lock().unwrap();
+        let reduce_tasks = self.reduce_tasks.lock().unwrap();
+        let map_leases = self.map_leases.lock().unwrap();
+        let reduce_leases = self.reduce_leases.lock().unwrap();
+        let reduce_finish = self.reduce_finish.lock().unwrap();
+        let map_finish = self.map_finish.lock().unwrap();
+
+        println!("[Serialize] Serializing the status of the current coordinator to `coordinator.wal`");
+
+        if let Ok(mut wal_log) = std::fs::File::create(self.log_dir_name.clone() + "/" + &self.wal_name) {
+            wal_log.write_all(format!("BEGIN\n").as_bytes()).unwrap();
+
+            // The length of map tasks
+            wal_log.write_all(format!("{}\n", map_tasks.len()).as_bytes()).unwrap();
+            // The individual tasks
+            for (&k, &v) in &*map_tasks {
+                wal_log.write_all(format!("{} {}\n", k, v).as_bytes()).unwrap();
+            }
+
+            // The global unique map id
+            wal_log.write_all(format!("{}\n", *map_id).as_bytes()).unwrap();
+
+            // The length of reduce tasks
+            wal_log.write_all(format!("{}\n", reduce_tasks.len()).as_bytes()).unwrap();
+            // The individual tasks
+            for (&k, &v) in &*reduce_tasks {
+                wal_log.write_all(format!("{} {}\n", k, v).as_bytes()).unwrap();
+            }
+
+            // The global unique reduce id
+            wal_log.write_all(format!("{}\n", *reduce_id).as_bytes()).unwrap();
+
+            // `map_finish`
+            wal_log.write_all(format!("{}\n", *map_finish).as_bytes()).unwrap();
+
+            // `reduce_finish`
+            wal_log.write_all(format!("{}\n", *reduce_finish).as_bytes()).unwrap();
+
+            // The length of map leases
+            wal_log.write_all(format!("{}\n", map_leases.len()).as_bytes()).unwrap();
+            // The individual leases
+            // FIXME: Now only recording the map id
+            for (&k, _) in &*map_leases {
+                wal_log.write_all(format!("{}\n", k).as_bytes()).unwrap();
+            }
+
+            // The length of reduce leases
+            wal_log.write_all(format!("{}\n", reduce_leases.len()).as_bytes()).unwrap();
+            // The individual leases
+            // FIXME: Now only recording the map id
+            for (&k, _) in &*reduce_leases {
+                wal_log.write_all(format!("{}\n", k).as_bytes()).unwrap();
+            }
+
+            wal_log.write_all(format!("END\n").as_bytes()).unwrap();
+        } else {
+            println!("[Serialize] Failed to open `coordinator.wal`");
+            return false;
+        }
+        // Successfully serialized to the underlying Write-Ahead-Log
+        true
+    }
+
+    /// This function will deserialize the status of coordinator when recovering
+    fn deserialize(&mut self, _wal_vec: Vec<&str>) -> bool {
+        true
+    }
+
+    pub fn recover(&mut self) -> bool {
+        // First check if there is existed `Write-Ahead-Log` inside the log directory
+        println!("[Recovery] Check if there is `coordinator.wal` existed");
+        if let Ok(mut wal_log) = std::fs::File::open(self.log_dir_name.clone() + "/" + &self.wal_name) {
+            let mut wal_contents = String::new();
+            wal_log.read_to_string(&mut wal_contents).unwrap();
+            let wal_vec = wal_contents
+                .split("\n")
+                .filter(|x| !x.is_empty())
+                .collect::<Vec<&str>>();
+            // Begin the actual recover process by process the latest MapReduce status
+            assert!(self.deserialize(wal_vec));
+        } else {
+            println!("[Recovery] Found no `coordinator.wal`, starts the coordinator in normal mode");
+            return false;
+        }
+        // Successfully recover from the underlying Write-Ahead-Log
         true
     }
 }
@@ -303,6 +402,9 @@ impl Server for Coordinator {
 
     /// The worker will call this when finishing the map task
     fn report_map_task_finish(self, _: context::Context, id: i32) -> Self::ReportMapTaskFinishFut {
+        // Serialize the current status before each report
+        println!("[Map] Begin serialize the Coordinator");
+        self.serialize();
         let cur_map_tasks = self.map_tasks.lock().unwrap();
         let mut cur_map_leases = self.map_leases.lock().unwrap();
         // Sanity check
@@ -345,6 +447,9 @@ impl Server for Coordinator {
 
     /// The worker will call this when finishing the reduce task
     fn report_reduce_task_finish(self, _: context::Context, id: i32) -> Self::ReportReduceTaskFinishFut {
+        // Serialize the current status before each report
+        println!("[Reduce] Begin serialize the Coordinator");
+        self.serialize();
         let cur_reduce_tasks = self.reduce_tasks.lock().unwrap();
         let mut cur_reduce_leases = self.reduce_leases.lock().unwrap();
         // Sanity check

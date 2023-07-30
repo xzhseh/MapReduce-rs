@@ -12,6 +12,7 @@
 
 ## To run the program, follow the instructions:
 - Please make sure you are in the `src` directory, if not (Assumes you are in the root directory), run `cd src`
+- If you want to start the MapReduce in default version, just run `bash start.sh` or `zsh start.sh` or other command to run the script, depending on your own environment. To stop the MapReduce process, run the `stop.sh` in the same way. If permission is denied, run `chmod -x <script name>` to grant permission
 - You can start the `Coordinator` by running `cargo run --bin mrcoordinator -- <map tasks number> <reduce tasks number> <worker number>`
 - Then start one or more `Worker(s)` in **different** terminal windows by running `cargo run --bin mrworker <map tasks number> <reduce tasks number>`, please make sure the server has been started before you starts the `Worker`
 - The number of `Worker(s)` should exactly match with the specified number when you started the server, otherwise the MapReduce process either will hang (The `Worker(s)` is not enough) or will panic (The `Worker(s)` exceed the preset limit)
@@ -24,6 +25,7 @@ A typical MapReduce result will probably look like the following image, the `Coo
 ![MapReduce](img/mapreduce.png)
 
 ## TODO:
+- Garbage collector
 - Improve logging method, add different logging level
 - Parallel processing for each worker, i.e., utilize `rayon` to achieve parallel data processing
 - Better serialization & deserialization format especially for intermediate files
