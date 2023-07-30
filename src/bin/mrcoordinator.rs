@@ -29,6 +29,15 @@ async fn main() -> anyhow::Result<()> {
     // Create a new Coordinator
     let coordinator = Arc::new(Mutex::new(Coordinator::new(map_n, reduce_n, worker_n)));
 
+    // Check if the Coordinator needs to recovery (If there is Write-Ahead-Log inside the log directory)
+    let recovery_result = coordinator.lock().unwrap().recover();
+
+    if recovery_result {
+        println!("[Recovery] The coordinator has finished recovering, MapReduce will soon resume");
+    } else {
+        println!("[Recovery] Coordinator will be started in normal mode");
+    }
+
     // Create a clone for RPC server
     let coordinator_clone = Arc::clone(&coordinator);
 
@@ -64,6 +73,14 @@ async fn main() -> anyhow::Result<()> {
             // Reset the time counter
             lease_time_counter = 0;
         }
+    }
+
+    // Cleaning up the resource
+    println!("[Reduce] Cleaning up the `coordinator.wal`");
+    if let std::result::Result::Ok(()) =  std::fs::remove_file("log/coordinator.wal") {
+        println!("[Reduce] Successfully remove the `coordinator.wal`");
+    } else {
+        println!("[Reduce] Failed to remove the `coordinator.wal`");
     }
 
     println!(
