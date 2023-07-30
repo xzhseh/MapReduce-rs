@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
         // If not finished, sleep for a while in the main thread
         sleep(Duration::from_secs(1)).await;
         lease_time_counter += 1;
-        if i == lease_period {
+        if lease_time_counter == lease_period {
             // Check the map or reduce lease every `lease_period` seconds
             // Since the MapReduce will only be in either map or reduce phase without overlapping
             println!("[Check Lease] Check the current lease to see if any worker is offline");

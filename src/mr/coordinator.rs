@@ -68,7 +68,7 @@ impl Coordinator {
         let _map_id = self.map_id.lock().unwrap();
         let _reduce_id = self.reduce_id.lock().unwrap();
         let _worker_id = self.worker_id.lock().unwrap();
-
+        // The resources that will be used later
         let mut map_tasks = self.map_tasks.lock().unwrap();
         let mut reduce_tasks = self.reduce_tasks.lock().unwrap();
         let mut map_leases = self.map_leases.lock().unwrap();
@@ -176,16 +176,37 @@ impl Server for Coordinator {
 
     /// The worker will call this during map phase through RPC, to get a map task id, represents a input text file
     fn get_map_task(self, _: context::Context) -> Self::GetMapTaskFut {
+        // First lock the resources
         let mut cur_map_id = self.map_id.lock().unwrap();
+        let mut cur_map_tasks = self.map_tasks.lock().unwrap();
+
         if !self.prepare() {
             // This indicates the worker that the preparation phase hasn't ended
             return ready(-2);
         }
+
         if *cur_map_id == self.map_n || *self.map_finish.lock().unwrap() {
+            // Check if every task is properly holding by a single worker
+            // FIXME: This may lead to infinite map phase, if the worker crash after being assigned the last map task
+            // Since the other worker may already turn into reduce phase
+            // One way to fix is to notify the reduce phase worker to change state back to map to finish the stale task
+            // But this solution is not so elegant and we must hard-coded some magic number to return to the worker
+            // When the `get_reduce_task` is called, so...
+            for (&k, &v) in &cur_map_tasks.clone() {
+                if v {
+                    continue;
+                }
+                println!("[Map] Staled map task #{} detected, the previous worker may have gone offline, assigned this task to a new worker", k);
+                // Otherwise, there is staled task, assign this task to the worker
+                // Also update the status
+                cur_map_tasks.insert(k, true);
+                return ready(k);
+            }
             // No more map tasks are available
             return ready(-1);
         }
-        let mut cur_map_tasks = self.map_tasks.lock().unwrap();
+
+        // Otherwise, this should be the normal process
         cur_map_tasks.insert(*cur_map_id, false);
         let cur_map = *cur_map_id;
         let ret = ready(cur_map);
@@ -201,16 +222,32 @@ impl Server for Coordinator {
 
     /// The worker will call this during reduce phase through RPC, to get a reduce task id, represents a output file
     fn get_reduce_task(self, _: context::Context) -> Self::GetReduceTaskFut {
+        // First lock the resources
+        let mut cur_reduce_id = self.reduce_id.lock().unwrap();
+        let mut cur_reduce_tasks = self.reduce_tasks.lock().unwrap();
+
         if !*self.map_finish.lock().unwrap() {
             // The map phase has not yet finished
             return ready(-2);
         }
-        let mut cur_reduce_id = self.reduce_id.lock().unwrap();
+
         if *cur_reduce_id == self.reduce_n || *self.reduce_finish.lock().unwrap() {
+            // FIXME: Same as `get_map_tasks`...
+            for (&k, &v) in &cur_reduce_tasks.clone() {
+                if v {
+                    continue;
+                }
+                println!("[Reduce] Staled reduce task #{} detected, the previous worker may have gone offline, assigned this task to a new worker", k);
+                // Otherwise, there is staled task, assign this task to the worker
+                // Also update the status
+                cur_reduce_tasks.insert(k, true);
+                return ready(k);
+            }
             // No more reduce tasks are available
             return ready(-1);
         }
-        let mut cur_reduce_tasks = self.reduce_tasks.lock().unwrap();
+
+        // Otherwise, this should be the normal process
         cur_reduce_tasks.insert(*cur_reduce_id, false);
         let cur_reduce = *cur_reduce_id;
         let ret = ready(cur_reduce);
@@ -242,12 +279,23 @@ impl Server for Coordinator {
 
     /// The worker will call this when finishing the map task
     fn report_map_task_finish(self, _: context::Context, id: i32) -> Self::ReportMapTaskFinishFut {
-        let mut cur_map_tasks = self.map_tasks.lock().unwrap();
-        assert!(cur_map_tasks.contains_key(&id) && *cur_map_tasks.get(&id).unwrap() == false);
+        let cur_map_tasks = self.map_tasks.lock().unwrap();
+        assert!(cur_map_tasks.contains_key(&id) && *cur_map_tasks.get(&id).unwrap() == true);
         println!("[Map] Map task #{} has been finished", id);
+        // No need to do the following since the semantic of the map has changed
         // Set the value to `true`, indicating the finish of the map task
-        cur_map_tasks.insert(id, true);
+        // cur_map_tasks.insert(id, true);
         if id == self.map_n - 1 {
+            // First let's check if there is staled map task
+            // FIXME: Same as `get_map_tasks`
+            for (&k, &v) in &cur_map_tasks.clone() {
+                if v {
+                    continue;
+                }
+                println!("[Map] Staled map task #{} detected when reporting, the previous worker may have gone offline, will assigned this task to a new worker", k);
+                return ready(true);
+            }
+            // Otherwise, it's safe to set the `map_finish` to true
             let mut map_finish = self.map_finish.lock().unwrap();
             *map_finish = true;
             println!("[Map] All map tasks have been finished by worker processes, the reduce phase will then begin!");
@@ -257,12 +305,23 @@ impl Server for Coordinator {
 
     /// The worker will call this when finishing the reduce task
     fn report_reduce_task_finish(self, _: context::Context, id: i32) -> Self::ReportReduceTaskFinishFut {
-        let mut cur_reduce_tasks = self.reduce_tasks.lock().unwrap();
-        assert!(cur_reduce_tasks.contains_key(&id) && *cur_reduce_tasks.get(&id).unwrap() == false);
+        let cur_reduce_tasks = self.reduce_tasks.lock().unwrap();
+        assert!(cur_reduce_tasks.contains_key(&id) && *cur_reduce_tasks.get(&id).unwrap() == true);
         println!("[Reduce] Reduce task #{} has been finished", id);
+        // No need to do the following since the semantic of the map has changed
         // Set the value to `true`, indicating the finish of the reduce task
-        cur_reduce_tasks.insert(id, true);
+        // cur_reduce_tasks.insert(id, true);
         if id == self.reduce_n - 1 {
+            // First let's check if there is staled reduce task
+            // FIXME: Same as `get_map_tasks`
+            for (&k, &v) in &cur_reduce_tasks.clone() {
+                if v {
+                    continue;
+                }
+                println!("[Reduce] Staled reduce task #{} detected when reporting, the previous worker may have gone offline, will assigned this task to a new worker", k);
+                return ready(true);
+            }
+            // Otherwise, it's safe to set the `reduce_finish` to true
             let mut reduce_finish = self.reduce_finish.lock().unwrap();
             *reduce_finish = true;
             println!("[Reduce] All reduce tasks have been finished by worker processes, MapReduce has finished!");
