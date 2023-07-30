@@ -58,6 +58,11 @@ async fn main() -> anyhow::Result<()> {
                 assert!(worker.get_map_id() == -1);
                 // Ask the coordinator for a new map task id
                 let map_task_id = client.get_map_task(context::current()).await?;
+                if map_task_id == -3 {
+                    println!("[Map] The lease is not empty, go to sleep and recheck later");
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
                 if map_task_id == -2 {
                     // Still in preparation phase
                     // Just go to sleep
@@ -125,6 +130,11 @@ async fn main() -> anyhow::Result<()> {
                 assert!(worker.get_map_id() == -1 && worker.get_reduce_id() == -1);
                 // Ask the coordinator for a new reduce task id
                 let reduce_task_id = client.get_reduce_task(context::current()).await?;
+                if reduce_task_id == -3 {
+                    println!("[Reduce] The lease is not empty, go to sleep and recheck later");
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
                 if reduce_task_id == -2 {
                     // The reduce phase has not yet started, go back to sleep
                     println!("[Reduce] The reduce phase has not yet started due to unfinished map tasks, go to sleep");

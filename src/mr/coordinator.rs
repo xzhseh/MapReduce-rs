@@ -96,6 +96,7 @@ impl Coordinator {
             // Update the corresponding reduce task map and refresh the reduce lease
             for stale_id in &stale_reduce_tasks {
                 assert!(reduce_tasks.get(stale_id).unwrap());
+                println!("[Check Lease] Staled reduce task #{} detected, mark it as staled", stale_id);
                 reduce_tasks.insert(*stale_id, false);
                 reduce_leases.remove_entry(stale_id);
             }
@@ -104,7 +105,7 @@ impl Coordinator {
 
         // Then the MapReduce must in the map phase
         assert!(!*map_finish && !*reduce_finish);
-        println!("[Check Lease] The MapReduce is in reduce phase, begin to check map tasks leases");
+        println!("[Check Lease] The MapReduce is in map phase, begin to check map tasks leases");
         // Check every map task lease, get the outdated ones
         let stale_map_tasks = map_leases
             .iter()
@@ -115,6 +116,7 @@ impl Coordinator {
         // Update the corresponding reduce task map and refresh the reduce lease
         for stale_id in &stale_map_tasks {
             assert!(map_tasks.get(stale_id).unwrap());
+            println!("[Check Lease] Staled map task #{} detected, mark it as staled", stale_id);
             map_tasks.insert(*stale_id, false);
             map_leases.remove_entry(stale_id);
         }
@@ -207,12 +209,16 @@ impl Server for Coordinator {
                 cur_map_leases.insert(k, Instant::now());
                 return ready(k);
             }
+            if !cur_map_leases.is_empty() {
+                // Should wait to check if there are more stale tasks
+                return ready(-3);
+            }
             // No more map tasks are available
             return ready(-1);
         }
 
         // Otherwise, this should be the normal process
-        cur_map_tasks.insert(*cur_map_id, false);
+        cur_map_tasks.insert(*cur_map_id, true);
         // Insert the new lease
         cur_map_leases.insert(*cur_map_id, Instant::now());
         let cur_map = *cur_map_id;
@@ -255,12 +261,16 @@ impl Server for Coordinator {
                 cur_reduce_leases.insert(k, Instant::now());
                 return ready(k);
             }
+            if !cur_reduce_leases.is_empty() {
+                // Same as `get_map_tasks`
+                return ready(-3);
+            }
             // No more reduce tasks are available
             return ready(-1);
         }
 
         // Otherwise, this should be the normal process
-        cur_reduce_tasks.insert(*cur_reduce_id, false);
+        cur_reduce_tasks.insert(*cur_reduce_id, true);
         // Insert the new lease
         cur_reduce_leases.insert(*cur_reduce_id, Instant::now());
         let cur_reduce = *cur_reduce_id;
@@ -301,28 +311,35 @@ impl Server for Coordinator {
         println!("[Map] Map task #{} has been finished", id);
         // Remove the lease, since the task has been finished
         cur_map_leases.remove_entry(&id);
+
         // No need to do the following since the semantic of the map has changed
         // Set the value to `true`, indicating the finish of the map task
         // cur_map_tasks.insert(id, true);
-        if id == self.map_n - 1 {
-            // First let's check if there is staled map task
-            // FIXME: Same as `get_map_tasks`
-            for (&k, &v) in &cur_map_tasks.clone() {
-                if v {
-                    continue;
-                }
-                println!("[Map] Staled map task #{} detected when reporting, the previous worker may have gone offline, will assigned this task to a new worker", k);
-                return ready(true);
+
+        // First let's check if there is staled map task
+        // FIXME: Same as `get_map_tasks`
+        for (&k, &v) in &cur_map_tasks.clone() {
+            if v {
+                continue;
             }
-            if !cur_map_leases.is_empty() {
-                println!("[Map] The map lease is not empty, there's still unfinished map tasks");
-                return ready(true);
-            }
+            println!("[Map] Staled map task #{} detected when reporting, the previous worker may have gone offline, will assigned this task to a new worker", k);
+            return ready(true);
+        }
+
+        if !cur_map_leases.is_empty() {
+            println!("[Map] The map lease is not empty, there's still unfinished map tasks");
+            return ready(true);
+        }
+
+        let mut map_finish = self.map_finish.lock().unwrap();
+        let map_id = self.map_id.lock().unwrap();
+
+        if *map_id == self.map_n {
             // Otherwise, it's safe to set the `map_finish` to true
-            let mut map_finish = self.map_finish.lock().unwrap();
             *map_finish = true;
             println!("[Map] All map tasks have been finished by worker processes, the reduce phase will then begin!");
         }
+
         ready(true)
     }
 
@@ -336,28 +353,35 @@ impl Server for Coordinator {
         println!("[Reduce] Reduce task #{} has been finished", id);
         // Remove the lease, since the task has been finished
         cur_reduce_leases.remove_entry(&id);
+
         // No need to do the following since the semantic of the map has changed
         // Set the value to `true`, indicating the finish of the reduce task
         // cur_reduce_tasks.insert(id, true);
-        if id == self.reduce_n - 1 {
-            // First let's check if there is staled reduce task
-            // FIXME: Same as `get_map_tasks`
-            for (&k, &v) in &cur_reduce_tasks.clone() {
-                if v {
-                    continue;
-                }
-                println!("[Reduce] Staled reduce task #{} detected when reporting, the previous worker may have gone offline, will assigned this task to a new worker", k);
-                return ready(true);
+
+        // First let's check if there is staled reduce task
+        // FIXME: Same as `get_map_tasks`
+        for (&k, &v) in &cur_reduce_tasks.clone() {
+            if v {
+                continue;
             }
-            if !cur_reduce_leases.is_empty() {
-                println!("[Reduce] The reduce lease is not empty, there's still unfinished reduce tasks");
-                return ready(true);
-            }
+            println!("[Reduce] Staled reduce task #{} detected when reporting, the previous worker may have gone offline, will assigned this task to a new worker", k);
+            return ready(true);
+        }
+
+        if !cur_reduce_leases.is_empty() {
+            println!("[Reduce] The reduce lease is not empty, there's still unfinished reduce tasks");
+            return ready(true);
+        }
+
+        let mut reduce_finish = self.reduce_finish.lock().unwrap();
+        let reduce_id = self.reduce_id.lock().unwrap();
+        
+        if *reduce_id == self.reduce_n {
             // Otherwise, it's safe to set the `reduce_finish` to true
-            let mut reduce_finish = self.reduce_finish.lock().unwrap();
             *reduce_finish = true;
             println!("[Reduce] All reduce tasks have been finished by worker processes, MapReduce has finished!");
         }
+
         ready(true)
     }
 }
